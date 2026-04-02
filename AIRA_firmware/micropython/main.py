@@ -144,7 +144,7 @@ def handle_command(cmd: str):
 
 
 def build_advertising_payload(name):
-    """Build BLE advertising payload with flags and complete local name."""
+    """Build BLE advertising payload with flags, name, and service UUID."""
     payload = bytearray()
     # Flags: LE General Discoverable + BR/EDR Not Supported
     payload += bytearray([2, _ADV_TYPE_FLAGS, 0x06])
@@ -158,43 +158,73 @@ class BLEUART:
     def __init__(self, name="AIRA Motor"):
         self._ble = bluetooth.BLE()
         self._ble.active(True)
-        self._ble.irq(self._irq)
-        ((self._tx_handle, self._rx_handle),) = self._ble.gatts_register_services((_NUS_SERVICE,))
+        self._tx_handle = None
+        self._rx_handle = None
         self._conn_handle = None
         self._name = name
+        
+        # Register services with retry
+        for attempt in range(3):
+            try:
+                ((self._tx_handle, self._rx_handle),) = self._ble.gatts_register_services((_NUS_SERVICE,))
+                print("BLE services registered")
+                break
+            except Exception as e:
+                print(f"Service registration failed (attempt {attempt + 1}):", e)
+                if attempt < 2:
+                    time.sleep_ms(200)
+        
+        if self._tx_handle is None or self._rx_handle is None:
+            raise Exception("Failed to register BLE services")
+        
+        self._ble.irq(self._irq)
         self._advertise()
 
     def _irq(self, event, data):
         if event == _IRQ_CENTRAL_CONNECT:
-            conn_handle, _, _ = data
-            self._conn_handle = conn_handle
+            self._conn_handle, _, _ = data
             print("BLE connected")
         elif event == _IRQ_CENTRAL_DISCONNECT:
-            conn_handle, _, _ = data
             self._conn_handle = None
-            print("BLE disconnected")
+            print("BLE disconnected - preparing for reconnection")
+            time.sleep_ms(200)
             self._advertise()
         elif event == _IRQ_GATTS_WRITE:
             conn_handle, attr_handle = data
             if attr_handle == self._rx_handle:
-                msg = self._ble.gatts_read(self._rx_handle)
-                if msg:
-                    for byte in msg:
-                        cmd = chr(byte)
-                        result = handle_command(cmd)
-                        # Only echo and send a response when a valid command was handled
-                        if result:
-                            print("BLE cmd:", repr(cmd), "->", result)
-                            self._send(result + "\n")
+                # Verify handles are valid before reading
+                if self._rx_handle is not None:
+                    data_received = self._ble.gatts_read(self._rx_handle)
+                    if data_received is not None:
+                        cmd = data_received.decode().strip()
+                        response = handle_command(cmd)
+                        if response:
+                            self._send(response)
 
     def _send(self, text):
-        if self._conn_handle is not None:
-            self._ble.gatts_notify(self._conn_handle, self._tx_handle, text.encode())
+        if self._conn_handle is not None and self._tx_handle is not None:
+            try:
+                # gatts_notify takes: value_handle, data (no conn_handle needed)
+                self._ble.gatts_notify(self._tx_handle, text.encode())
+            except Exception as e:
+                print("Error sending BLE notification:", e)
 
     def _advertise(self):
-        payload = build_advertising_payload(self._name)
-        self._ble.gap_advertise(100000, payload)
-        print("BLE advertising:", self._name)
+        """Start BLE advertising with retry logic."""
+        # Start advertising with retries
+        for attempt in range(3):
+            try:
+                payload = build_advertising_payload(self._name)
+                # Simply start/restart advertising - no need for explicit stop
+                self._ble.gap_advertise(100000, payload)
+                print(f"BLE advertising started: {self._name} (payload: {len(payload)} bytes)")
+                return
+            except Exception as e:
+                print(f"Advertising failed (attempt {attempt + 1}):", e)
+                if attempt < 2:
+                    time.sleep_ms(100)
+        
+        print("ERROR: Failed to start advertising after retries")
 
 
 def main():
