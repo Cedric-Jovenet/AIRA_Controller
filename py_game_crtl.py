@@ -72,8 +72,8 @@ def main():
             cmd = "a"
             if v < -0.5: cmd = "z"
             elif v > 0.5: cmd = "s"
-            elif h < -0.5: cmd = "q"
-            elif h > 0.5: cmd = "d"
+            elif h < -0.5: cmd = "d"
+            elif h > 0.5: cmd = "q"
             
             shared_data["cmd"] = cmd
 
